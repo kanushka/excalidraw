@@ -43,7 +43,7 @@ const getKeys = async (teamDomain: string, forceRefresh = false) => {
 const verifyAccessJwt = async (
   token: string,
   teamDomain: string,
-  aud: string,
+  allowedAuds: string[],
 ) => {
   const [headerB64, payloadB64, signatureB64] = token.split(".");
   if (!headerB64 || !payloadB64 || !signatureB64) {
@@ -91,7 +91,7 @@ const verifyAccessJwt = async (
     : [payload.aud];
 
   return (
-    auds.includes(aud) &&
+    auds.some((aud) => allowedAuds.includes(aud)) &&
     payload.iss === `https://${teamDomain}` &&
     typeof payload.exp === "number" &&
     payload.exp > now
@@ -104,9 +104,14 @@ export const checkAccess = async (
   env: Env,
 ): Promise<string | null> => {
   const teamDomain = env.ACCESS_TEAM_DOMAIN?.trim();
-  const aud = env.ACCESS_AUD?.trim();
+  // comma-separated: Pages creates separate Access applications for the
+  // production `*.pages.dev` domain and for preview deployments
+  const auds = (env.ACCESS_AUD || "")
+    .split(",")
+    .map((aud) => aud.trim())
+    .filter(Boolean);
 
-  if (!teamDomain || !aud) {
+  if (!teamDomain || !auds.length) {
     return env.ALLOW_UNAUTHENTICATED === "true"
       ? null
       : "Cloudflare Access is not configured (set ACCESS_TEAM_DOMAIN and ACCESS_AUD)";
@@ -117,7 +122,7 @@ export const checkAccess = async (
     return "missing Cloudflare Access token";
   }
   try {
-    return (await verifyAccessJwt(token, teamDomain, aud))
+    return (await verifyAccessJwt(token, teamDomain, auds))
       ? null
       : "invalid Cloudflare Access token";
   } catch (error: any) {
