@@ -1,10 +1,16 @@
 import { DefaultSidebar, Sidebar, THEME } from "@excalidraw/excalidraw";
 import {
+  file,
   messageCircleIcon,
   presentationIcon,
 } from "@excalidraw/excalidraw/components/icons";
 import { LinkButton } from "@excalidraw/excalidraw/components/LinkButton";
 import { useUIAppState } from "@excalidraw/excalidraw/context/ui-appState";
+
+import { CANVASES_SIDEBAR_TAB } from "../app_constants";
+import { isCanvasStoreEnabled } from "../data/CanvasStore";
+
+import { CanvasesPanel } from "./CanvasesPanel";
 
 import "./AppSidebar.scss";
 
@@ -67,6 +73,27 @@ const SidebarPromoCopy = (props: SidebarPromoCopyProps) => {
 
 export const AppSidebar = () => {
   const { theme, openSidebar } = useUIAppState();
+
+  if (isCanvasStoreEnabled()) {
+    return (
+      <DefaultSidebar>
+        <DefaultSidebar.TabTriggers>
+          <Sidebar.TabTrigger
+            tab={CANVASES_SIDEBAR_TAB}
+            title="Canvases"
+            style={{
+              opacity: openSidebar?.tab === CANVASES_SIDEBAR_TAB ? 1 : 0.4,
+            }}
+          >
+            {file}
+          </Sidebar.TabTrigger>
+        </DefaultSidebar.TabTriggers>
+        <Sidebar.Tab tab={CANVASES_SIDEBAR_TAB}>
+          <CanvasesPanel />
+        </Sidebar.Tab>
+      </DefaultSidebar>
+    );
+  }
 
   return (
     <DefaultSidebar>

@@ -130,6 +130,15 @@ import {
   localStorageQuotaExceededAtom,
 } from "./data/LocalData";
 import { isBrowserStorageStateNewer } from "./data/tabSync";
+import {
+  flushCanvasSave,
+  getCanvasSaveStatus,
+  isCanvasStoreEnabled,
+  isLocalCacheOfCurrentCanvas,
+  loadCanvasFiles,
+  loadInitialCanvas,
+  scheduleCanvasSave,
+} from "./data/CanvasStore";
 import { ShareDialog, shareDialogStateAtom } from "./share/ShareDialog";
 import CollabError, { collabErrorIndicatorAtom } from "./collab/CollabError";
 import { useHandleAppTheme } from "./useHandleAppTheme";
@@ -249,6 +258,35 @@ const initializeScene = async (opts: {
 
   let roomLinkData = getCollaborationLinkData(window.location.href);
   const isExternalScene = !!(id || jsonBackendMatch || roomLinkData);
+
+  if (isCanvasStoreEnabled() && !isExternalScene && !externalUrlMatch) {
+    try {
+      const loaded = await loadInitialCanvas(scene);
+      if (loaded.scene) {
+        scene = {
+          elements: restoreElements(loaded.scene.elements, null, {
+            repairBindings: true,
+            deleteInvisibleElements: true,
+          }),
+          appState: restoreAppState(
+            loaded.scene.appState,
+            // keep local user settings (theme etc.) not stored on the server
+            localDataState?.appState,
+          ),
+          scrollToContent: true,
+        };
+      }
+      if (loaded.canvas.name) {
+        scene.appState = { ...scene.appState, name: loaded.canvas.name };
+      }
+    } catch (error: any) {
+      console.error(error);
+      scene.appState = {
+        ...scene.appState,
+        errorMessage: `Couldn't load your canvases (${error.message}). Changes are only saved in this browser until the page is reloaded.`,
+      };
+    }
+  }
   if (isExternalScene) {
     if (
       // don't prompt if scene is empty
@@ -533,18 +571,19 @@ const ExcalidrawWrapper = () => {
           });
         } else if (isInitialLoad) {
           if (fileIds.length) {
-            LocalData.fileStorage
-              .getFiles(fileIds)
-              .then(async ({ loadedFiles, erroredFiles }) => {
-                if (loadedFiles.length) {
-                  excalidrawAPI.addFiles(loadedFiles);
-                }
-                updateStaleImageStatuses({
-                  excalidrawAPI,
-                  erroredFiles,
-                  elements: excalidrawAPI.getSceneElementsIncludingDeleted(),
-                });
+            (isCanvasStoreEnabled()
+              ? loadCanvasFiles(fileIds)
+              : LocalData.fileStorage.getFiles(fileIds)
+            ).then(async ({ loadedFiles, erroredFiles }) => {
+              if (loadedFiles.length) {
+                excalidrawAPI.addFiles(loadedFiles);
+              }
+              updateStaleImageStatuses({
+                excalidrawAPI,
+                erroredFiles,
+                elements: excalidrawAPI.getSceneElementsIncludingDeleted(),
               });
+            });
           }
           // on fresh load, clear unused files from IDB (from previous
           // session)
@@ -596,6 +635,10 @@ const ExcalidrawWrapper = () => {
 
     const syncData = debounce(() => {
       if (isTestEnv()) {
+        return;
+      }
+      if (isCanvasStoreEnabled() && !isLocalCacheOfCurrentCanvas()) {
+        // another tab saved a different canvas to the local cache
         return;
       }
       if (
@@ -660,6 +703,9 @@ const ExcalidrawWrapper = () => {
     const visibilityChange = (event: FocusEvent | Event) => {
       if (event.type === EVENT.BLUR || document.hidden) {
         LocalData.flushSave();
+        if (isCanvasStoreEnabled()) {
+          flushCanvasSave().catch(() => {});
+        }
       }
       if (
         event.type === EVENT.VISIBILITY_CHANGE ||
@@ -690,12 +736,16 @@ const ExcalidrawWrapper = () => {
   useEffect(() => {
     const unloadHandler = (event: BeforeUnloadEvent) => {
       LocalData.flushSave();
+      if (isCanvasStoreEnabled()) {
+        flushCanvasSave().catch(() => {});
+      }
 
       if (
-        excalidrawAPI &&
-        LocalData.fileStorage.shouldPreventUnload(
-          excalidrawAPI.getSceneElements(),
-        )
+        (excalidrawAPI &&
+          LocalData.fileStorage.shouldPreventUnload(
+            excalidrawAPI.getSceneElements(),
+          )) ||
+        (isCanvasStoreEnabled() && getCanvasSaveStatus() !== "saved")
       ) {
         if (import.meta.env.VITE_APP_DISABLE_PREVENT_UNLOAD !== "true") {
           preventUnload(event);
@@ -724,6 +774,9 @@ const ExcalidrawWrapper = () => {
     // this check is redundant, but since this is a hot path, it's best
     // not to evaludate the nested expression every time
     if (!LocalData.isSavePaused()) {
+      if (isCanvasStoreEnabled()) {
+        scheduleCanvasSave(elements, appState, files);
+      }
       LocalData.save(elements, appState, files, () => {
         if (excalidrawAPI) {
           let didChange = false;

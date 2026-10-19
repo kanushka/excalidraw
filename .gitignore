@@ -27,3 +27,6 @@ dev-dist
 html
 meta*.json
 .claude
+
+# Cloudflare local dev state
+.wrangler

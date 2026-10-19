@@ -15,6 +15,9 @@ interface ImportMetaEnv {
   VITE_APP_PORTAL_URL: string;
   VITE_APP_AI_BACKEND: string;
 
+  // canvas API for multiple canvases (e.g. `/api`). Unset = single local canvas
+  VITE_APP_CANVAS_API_URL: string;
+
   VITE_APP_FIREBASE_CONFIG: string;
 
   // whether to disable live reload / HMR. Usuaully what you want to do when
