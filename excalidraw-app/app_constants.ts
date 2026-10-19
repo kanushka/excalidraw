@@ -42,6 +42,10 @@ export const STORAGE_KEYS = {
   LOCAL_STORAGE_COLLAB: "excalidraw-collab",
   LOCAL_STORAGE_THEME: "excalidraw-theme",
   LOCAL_STORAGE_DEBUG: "excalidraw-debug",
+  // multiple canvases (CanvasStore)
+  LOCAL_STORAGE_LAST_CANVAS_ID: "excalidraw-last-canvas-id",
+  LOCAL_STORAGE_CANVAS_ID: "excalidraw-local-canvas-id",
+  LOCAL_STORAGE_CANVAS_DIRTY: "excalidraw-local-canvas-dirty",
   VERSION_DATA_STATE: "version-dataState",
   VERSION_FILES: "version-files",
 
@@ -59,3 +63,5 @@ export const COOKIES = {
 export const isExcalidrawPlusSignedUser = document.cookie.includes(
   COOKIES.AUTH_STATE_COOKIE,
 );
+
+export const CANVASES_SIDEBAR_TAB = "canvases";

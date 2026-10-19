@@ -1,0 +1,23 @@
+# Cloudflare Pages project: serves the built app and the canvas API
+# (Pages Functions in ./functions). See cloudflare/README.md.
+name = "excalidraw"
+pages_build_output_dir = "excalidraw-app/build"
+compatibility_date = "2025-09-01"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "excalidraw-canvases"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "excalidraw"
+database_id = "66dfd193-5470-4acf-b3ff-972468aed646"
+
+[vars]
+# Cloudflare Access team domain, e.g. "myteam.cloudflareaccess.com"
+ACCESS_TEAM_DOMAIN = ""
+# Application Audience (AUD) tag of the Access application
+ACCESS_AUD = ""
+# Until Access is configured the API refuses all requests. Set to "true" only
+# for local development (`wrangler pages dev`).
+ALLOW_UNAUTHENTICATED = "false"

@@ -2,17 +2,22 @@ import {
   loginIcon,
   ExcalLogo,
   eyeIcon,
+  file,
 } from "@excalidraw/excalidraw/components/icons";
 import { useI18n } from "@excalidraw/excalidraw/i18n";
-import { MainMenu } from "@excalidraw/excalidraw/index";
+import { MainMenu, useExcalidrawAPI } from "@excalidraw/excalidraw/index";
 import React from "react";
 
-import { isDevEnv } from "@excalidraw/common";
+import { DEFAULT_SIDEBAR, isDevEnv } from "@excalidraw/common";
 
 import type { Theme } from "@excalidraw/element/types";
 
 import { LanguageList } from "../app-language/LanguageList";
-import { isExcalidrawPlusSignedUser } from "../app_constants";
+import {
+  CANVASES_SIDEBAR_TAB,
+  isExcalidrawPlusSignedUser,
+} from "../app_constants";
+import { isCanvasStoreEnabled } from "../data/CanvasStore";
 
 import { saveDebugState } from "./DebugCanvas";
 
@@ -24,8 +29,23 @@ export const AppMainMenu: React.FC<{
   refresh: () => void;
 }> = React.memo((props) => {
   const { t } = useI18n();
+  const excalidrawAPI = useExcalidrawAPI();
   return (
     <MainMenu>
+      {isCanvasStoreEnabled() && (
+        <MainMenu.Item
+          icon={file}
+          onSelect={() =>
+            excalidrawAPI?.toggleSidebar({
+              name: DEFAULT_SIDEBAR.name,
+              tab: CANVASES_SIDEBAR_TAB,
+              force: true,
+            })
+          }
+        >
+          Canvases
+        </MainMenu.Item>
+      )}
       <MainMenu.DefaultItems.LoadScene />
       <MainMenu.DefaultItems.SaveToActiveFile />
       <MainMenu.DefaultItems.Export />
