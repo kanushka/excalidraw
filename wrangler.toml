@@ -15,10 +15,10 @@ database_id = "66dfd193-5470-4acf-b3ff-972468aed646"
 
 [vars]
 # Cloudflare Access team domain, e.g. "myteam.cloudflareaccess.com"
-ACCESS_TEAM_DOMAIN = ""
+ACCESS_TEAM_DOMAIN = "monello.cloudflareaccess.com"
 # Application Audience (AUD) tag(s) of the Access application(s),
 # comma-separated (production and preview deployments have one each)
-ACCESS_AUD = ""
+ACCESS_AUD = "3c5f4fcc6274f5d74ae6571944a1856751df34d971034f03f1b778f1d79e7794"
 # Until Access is configured the API refuses all requests. Set to "true" only
 # for local development (`wrangler pages dev`).
 ALLOW_UNAUTHENTICATED = "false"
