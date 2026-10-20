@@ -34,7 +34,7 @@ export interface Env {
   DB: D1Database;
   /** e.g. `myteam.cloudflareaccess.com` */
   ACCESS_TEAM_DOMAIN?: string;
-  /** Application Audience (AUD) tag of the Cloudflare Access application */
+  /** comma-separated Application Audience (AUD) tags of the Access applications */
   ACCESS_AUD?: string;
   /** set to "true" to serve the API without Cloudflare Access (local dev) */
   ALLOW_UNAUTHENTICATED?: string;
