@@ -10,7 +10,7 @@ This fork can keep any number of canvases on the server instead of excalidraw.co
 | Scenes and images | R2 bucket `excalidraw-canvases` | `canvases/<id>.excalidraw`, `files/<fileId>` |
 | Login | Zero Trust Access | dashboard |
 
-The app turns multiple canvases on when it's built with `VITE_APP_CANVAS_API_URL` set (the deploy workflow sets it to `/api`). Without it the app behaves like excalidraw.com.
+The app turns multiple canvases on when it's built with `VITE_APP_CANVAS_API_URL` set; `.env.production` sets it to `/api`. Without it the app behaves like excalidraw.com.
 
 ## API
 
