@@ -1,0 +1,26 @@
+# Worker hosting the live collaboration rooms (one Durable Object per canvas).
+# Deployed before the Pages project, which binds to it (see /wrangler.toml):
+#   npx wrangler deploy --config cloudflare/collab/wrangler.toml
+name = "excalidraw-collab"
+main = "worker.ts"
+compatibility_date = "2025-09-01"
+# only reachable through the Pages project's binding
+workers_dev = false
+preview_urls = false
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "CanvasRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CanvasRoom"]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "excalidraw-canvases"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "excalidraw"
+database_id = "66dfd193-5470-4acf-b3ff-972468aed646"

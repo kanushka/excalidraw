@@ -1,9 +1,11 @@
 name: Deploy to Cloudflare Pages
 
 # Builds the app with multiple canvases enabled and deploys it, together with
-# the canvas API in ./functions, to the Cloudflare Pages project "excalidraw".
+# the canvas API in ./functions, to the Cloudflare Pages project "excalidraw",
+# after the Worker hosting the live collaboration rooms (cloudflare/collab).
 # Needs the repository secrets CLOUDFLARE_API_TOKEN (permissions: Cloudflare
-# Pages Edit, D1 Edit) and CLOUDFLARE_ACCOUNT_ID. See cloudflare/README.md.
+# Pages Edit, D1 Edit, Workers Scripts Edit) and CLOUDFLARE_ACCOUNT_ID. See
+# cloudflare/README.md.
 
 on:
   push:
@@ -37,6 +39,8 @@ jobs:
           VITE_APP_CANVAS_API_URL: /api
       - name: Apply database schema
         run: npx wrangler@4 d1 execute excalidraw --remote --file=cloudflare/schema.sql
+      - name: Deploy live collaboration rooms
+        run: npx wrangler@4 deploy --config cloudflare/collab/wrangler.toml
       - name: Create Pages project (first deploy only)
         run: npx wrangler@4 pages project create excalidraw --production-branch=master || true
       - name: Deploy
