@@ -29,9 +29,25 @@ export interface D1Database {
   prepare(query: string): D1PreparedStatement;
 }
 
+export interface DurableObjectStub {
+  fetch(input: Request | string, init?: RequestInit): Promise<Response>;
+}
+
+export interface DurableObjectNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown): DurableObjectStub;
+}
+
 export interface Env {
   BUCKET: R2Bucket;
   DB: D1Database;
+  /** live collaboration rooms, one per canvas (cloudflare/collab) */
+  ROOMS?: DurableObjectNamespace;
+  /**
+   * origin share links open on, e.g. `https://share.example.com`. It must not
+   * be behind Cloudflare Access. Defaults to the origin of the request.
+   */
+  SHARE_ORIGIN?: string;
   /** e.g. `myteam.cloudflareaccess.com` */
   ACCESS_TEAM_DOMAIN?: string;
   /** comma-separated Application Audience (AUD) tags of the Access applications */

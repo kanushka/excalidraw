@@ -5,10 +5,11 @@ import {
   json,
   sanitizeName,
   toCanvasMeta,
-} from "../../../cloudflare/http";
+} from "../../../../cloudflare/http";
+import { disconnectGuests } from "../../../../cloudflare/shares";
 
-import type { CanvasRow } from "../../../cloudflare/http";
-import type { Env, Handler } from "../../../cloudflare/types";
+import type { CanvasRow } from "../../../../cloudflare/http";
+import type { Env, Handler } from "../../../../cloudflare/types";
 
 const MAX_SCENE_SIZE = 50 * 1024 * 1024;
 
@@ -100,6 +101,7 @@ export const onRequestPatch: Handler<"id"> = async ({
  * DELETE /api/canvases/:id — soft delete: the row is kept with `deleted_at`
  * and the scene object stays in R2, so a deleted canvas can be restored by
  * hand. Image files are shared between canvases and are never deleted here.
+ * Its share links stop working, and guests in its room are disconnected.
  */
 export const onRequestDelete: Handler<"id"> = async ({ env, params }) => {
   if (!isValidId(params.id)) {
@@ -113,5 +115,6 @@ export const onRequestDelete: Handler<"id"> = async ({ env, params }) => {
   if (!meta.changes) {
     return error(404, "canvas not found");
   }
+  await disconnectGuests(env, params.id);
   return new Response(null, { status: 204 });
 };

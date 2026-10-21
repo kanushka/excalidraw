@@ -87,7 +87,18 @@ class Portal {
     volatile: boolean = false,
     roomId?: string,
   ) {
-    if (this.isOpen()) {
+    if (this.isOpen() && this.collab.getCanvasRoomRole()) {
+      // canvas rooms aren't end-to-end encrypted (see CanvasRoomRole)
+      if (volatile && !this.collab.hasOtherCollaborators()) {
+        // cursors etc. with nobody to see them
+        return;
+      }
+      this.socket?.emit(
+        volatile ? WS_EVENTS.SERVER_VOLATILE : WS_EVENTS.SERVER,
+        roomId ?? this.roomId,
+        data,
+      );
+    } else if (this.isOpen()) {
       const json = JSON.stringify(data);
       const encoded = new TextEncoder().encode(json);
       const { encryptedBuffer, iv } = await encryptData(this.roomKey!, encoded);
@@ -146,6 +157,10 @@ class Portal {
   ) => {
     if (updateType === WS_SUBTYPES.INIT && !syncAll) {
       throw new Error("syncAll must be true when sending SCENE.INIT");
+    }
+    if (this.collab.getCanvasRoomRole() === "view") {
+      // read-only share link (the room would drop it anyway)
+      return;
     }
 
     // sync out only the elements we think we need to to save bandwidth.

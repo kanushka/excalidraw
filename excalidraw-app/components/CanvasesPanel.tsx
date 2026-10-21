@@ -23,6 +23,8 @@ import {
   renameCanvas,
   subscribeToCanvasSaveStatus,
 } from "../data/CanvasStore";
+import { useAtomValue } from "../app-jotai";
+import { collabAPIAtom } from "../collab/Collab";
 import { updateStaleImageStatuses } from "../data/FileManager";
 import { LocalData } from "../data/LocalData";
 
@@ -44,6 +46,7 @@ const formatDate = (timestamp: number) =>
 
 export const CanvasesPanel = () => {
   const excalidrawAPI = useExcalidrawAPI();
+  const collabAPI = useAtomValue(collabAPIAtom);
   const [canvases, setCanvases] = useState<CanvasMeta[] | null>(null);
   const [currentId, setCurrentId] = useState(getCurrentCanvasId());
   const [isBusy, setIsBusy] = useState(false);
@@ -93,6 +96,8 @@ export const CanvasesPanel = () => {
     // new canvas has replaced it
     LocalData.flushSave();
     LocalData.pauseSave("canvasSwitch");
+    // leave the open canvas's live room before its scene is replaced
+    collabAPI?.leaveCanvasRoom();
     try {
       const { canvas, scene } = await openCanvas(id);
       const elements = restoreElements(scene.elements, null, {
@@ -133,6 +138,8 @@ export const CanvasesPanel = () => {
       }
     } finally {
       LocalData.resumeSave("canvasSwitch");
+      // the new canvas's room, or the old one's if switching failed
+      collabAPI?.joinCanvasRoom("owner");
     }
   };
 

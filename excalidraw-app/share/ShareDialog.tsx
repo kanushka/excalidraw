@@ -20,8 +20,10 @@ import { useEffect, useRef, useState } from "react";
 
 import { atom, useAtom, useAtomValue } from "../app-jotai";
 import { activeRoomLinkAtom } from "../collab/Collab";
+import { getSharedLinkToken, isCanvasStoreEnabled } from "../data/CanvasStore";
 
 import "./ShareDialog.scss";
+import { CanvasShareDialog } from "./CanvasShareDialog";
 import { QRCode } from "./QRCode";
 
 import type { CollabAPI } from "../collab/Collab";
@@ -250,7 +252,13 @@ const ShareDialogInner = (props: ShareDialogProps) => {
   return (
     <Dialog size="small" onCloseRequest={props.handleClose} title={false}>
       <div className="ShareDialog">
-        {props.collabAPI && activeRoomLink ? (
+        {isCanvasStoreEnabled() || getSharedLinkToken() ? (
+          <CanvasShareDialog
+            collabAPI={props.collabAPI}
+            isGuest={!!getSharedLinkToken()}
+            handleClose={props.handleClose}
+          />
+        ) : props.collabAPI && activeRoomLink ? (
           <ActiveRoomDialog
             collabAPI={props.collabAPI}
             activeRoomLink={activeRoomLink}

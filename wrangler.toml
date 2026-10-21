@@ -13,6 +13,13 @@ binding = "DB"
 database_name = "excalidraw"
 database_id = "66dfd193-5470-4acf-b3ff-972468aed646"
 
+# Live collaboration rooms, hosted by the "excalidraw-collab" Worker
+# (cloudflare/collab), which has to be deployed first
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "CanvasRoom"
+script_name = "excalidraw-collab"
+
 [vars]
 # Cloudflare Access team domain, e.g. "myteam.cloudflareaccess.com"
 ACCESS_TEAM_DOMAIN = "monello.cloudflareaccess.com"
@@ -22,3 +29,8 @@ ACCESS_AUD = "3c5f4fcc6274f5d74ae6571944a1856751df34d971034f03f1b778f1d79e7794"
 # Until Access is configured the API refuses all requests. Set to "true" only
 # for local development (`wrangler pages dev`).
 ALLOW_UNAUTHENTICATED = "false"
+# Origin that share links open on. It must not be behind Cloudflare Access,
+# since the people you share with can't log in; the canvas API still checks
+# the Access login on every other route. Empty: the origin the link was
+# created on. See cloudflare/README.md.
+SHARE_ORIGIN = ""
