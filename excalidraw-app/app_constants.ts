@@ -64,4 +64,8 @@ export const isExcalidrawPlusSignedUser = document.cookie.includes(
   COOKIES.AUTH_STATE_COOKIE,
 );
 
+/** hides Excalidraw+ promos, sign-up links and socials (self-hosted builds) */
+export const isPlusBrandingHidden =
+  import.meta.env.VITE_APP_HIDE_PLUS_BRANDING === "true";
+
 export const CANVASES_SIDEBAR_TAB = "canvases";
