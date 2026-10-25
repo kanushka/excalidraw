@@ -134,12 +134,16 @@ import { isBrowserStorageStateNewer } from "./data/tabSync";
 import {
   flushCanvasSave,
   getCanvasSaveStatus,
+  getCurrentCanvasId,
+  getSharedLinkToken,
   isCanvasStoreEnabled,
   isLocalCacheOfCurrentCanvas,
   loadCanvasFiles,
   loadInitialCanvas,
+  loadSharedCanvas,
   scheduleCanvasSave,
 } from "./data/CanvasStore";
+import { sharedCanvasAtom } from "./share/CanvasShareDialog";
 import { ShareDialog, shareDialogStateAtom } from "./share/ShareDialog";
 import CollabError, { collabErrorIndicatorAtom } from "./collab/CollabError";
 import { useHandleAppTheme } from "./useHandleAppTheme";
@@ -224,6 +228,88 @@ const shareableLinkConfirmDialog = {
   color: "danger",
 } as const;
 
+/** opens the canvas of this tab's share link, live (see CanvasStore) */
+const initializeSharedCanvas = async (opts: {
+  collabAPI: CollabAPI | null;
+  excalidrawAPI: ExcalidrawImperativeAPI;
+}) => {
+  const { collabAPI, excalidrawAPI } = opts;
+  const localDataState = importFromLocalStorage();
+  let shared;
+  try {
+    shared = await loadSharedCanvas();
+  } catch (error: any) {
+    return {
+      scene: {
+        appState: {
+          errorMessage: `Couldn't open the shared canvas (${error.message}).`,
+        },
+      },
+      isExternalScene: false,
+    } as const;
+  }
+  if (!shared || !collabAPI) {
+    return {
+      scene: {
+        elements: [],
+        appState: {
+          errorMessage:
+            "This share link doesn't work anymore. Ask the person who shared it for a new one.",
+        },
+      },
+      isExternalScene: false,
+    } as const;
+  }
+  appJotaiStore.set(sharedCanvasAtom, shared);
+
+  const scene = await collabAPI.joinCanvasRoom(shared.mode);
+
+  return {
+    // like joining a room in initializeScene
+    scene: {
+      ...scene,
+      appState: {
+        ...restoreAppState(
+          {
+            ...scene?.appState,
+            theme: localDataState?.appState?.theme || scene?.appState?.theme,
+          },
+          excalidrawAPI.getAppState(),
+        ),
+        name: shared.name,
+        isLoading: false,
+      },
+      elements: reconcileElements(
+        scene?.elements || [],
+        excalidrawAPI.getSceneElementsIncludingDeleted() as RemoteExcalidrawElement[],
+        excalidrawAPI.getAppState(),
+      ),
+    },
+    isExternalScene: true,
+    id: "",
+    key: "",
+  } as const;
+};
+
+/** joins the live room of the owner's open canvas, once it's on screen */
+const joinOpenCanvasRoom = (
+  collabAPI: CollabAPI | null,
+  excalidrawAPI: ExcalidrawImperativeAPI,
+) => {
+  if (!collabAPI || !isCanvasStoreEnabled() || !getCurrentCanvasId()) {
+    return;
+  }
+  const join = () => {
+    if (excalidrawAPI.getAppState().isLoading) {
+      // the room's scene is merged into the one on screen
+      window.setTimeout(join, 50);
+    } else {
+      collabAPI.joinCanvasRoom("owner");
+    }
+  };
+  join();
+};
+
 const initializeScene = async (opts: {
   collabAPI: CollabAPI | null;
   excalidrawAPI: ExcalidrawImperativeAPI;
@@ -233,6 +319,10 @@ const initializeScene = async (opts: {
     | { isExternalScene: false; id?: null; key?: null }
   )
 > => {
+  if (getSharedLinkToken()) {
+    return initializeSharedCanvas(opts);
+  }
+
   const searchParams = new URLSearchParams(window.location.search);
   const id = searchParams.get("id");
   const jsonBackendMatch = window.location.hash.match(
@@ -451,6 +541,7 @@ const ExcalidrawWrapper = () => {
   });
   const collabError = useAtomValue(collabErrorIndicatorAtom);
   const userToFollow = useAtomValue(userToFollowAtom);
+  const sharedCanvas = useAtomValue(sharedCanvasAtom);
 
   const viewportStatusFrame = useMemo(
     () =>
@@ -605,10 +696,16 @@ const ExcalidrawWrapper = () => {
     initializeScene({ collabAPI, excalidrawAPI }).then(async (data) => {
       loadImages(data, /* isInitialLoad */ true);
       initialStatePromiseRef.current.promise.resolve(data.scene);
+      joinOpenCanvasRoom(collabAPI, excalidrawAPI);
     });
 
     const onHashChange = async (event: HashChangeEvent) => {
       event.preventDefault();
+      if (getSharedLinkToken()) {
+        // the share link is read once, when the tab opens
+        window.location.reload();
+        return;
+      }
       const libraryUrlTokens = parseLibraryTokensFromUrl();
       if (!libraryUrlTokens) {
         if (
@@ -629,6 +726,9 @@ const ExcalidrawWrapper = () => {
               appState: restoreAppState(data.scene.appState, null),
               captureUpdate: CaptureUpdateAction.IMMEDIATELY,
             });
+          }
+          if (!collabAPI?.isCollaborating()) {
+            joinOpenCanvasRoom(collabAPI, excalidrawAPI);
           }
         });
       }
@@ -746,7 +846,10 @@ const ExcalidrawWrapper = () => {
           LocalData.fileStorage.shouldPreventUnload(
             excalidrawAPI.getSceneElements(),
           )) ||
-        (isCanvasStoreEnabled() && getCanvasSaveStatus() !== "saved")
+        (isCanvasStoreEnabled() &&
+          getCanvasSaveStatus() !== "saved" &&
+          // the canvas's room saves it
+          !appJotaiStore.get(collabAPIAtom)?.isCanvasRoomSynced())
       ) {
         if (import.meta.env.VITE_APP_DISABLE_PREVENT_UNLOAD !== "true") {
           preventUnload(event);
@@ -770,12 +873,14 @@ const ExcalidrawWrapper = () => {
   ) => {
     if (collabAPI?.isCollaborating()) {
       collabAPI.syncElements(elements);
+      collabAPI.syncCanvasAppState(appState);
     }
 
     // this check is redundant, but since this is a hot path, it's best
     // not to evaludate the nested expression every time
     if (!LocalData.isSavePaused()) {
-      if (isCanvasStoreEnabled()) {
+      // while the canvas is live, its room saves it
+      if (isCanvasStoreEnabled() && !collabAPI?.isCanvasRoomSynced()) {
         scheduleCanvasSave(elements, appState, files);
       }
       LocalData.save(elements, appState, files, () => {
@@ -1006,12 +1111,17 @@ const ExcalidrawWrapper = () => {
         onExport={onExport}
         initialData={initialStatePromiseRef.current.promise}
         isCollaborating={isCollaborating}
+        viewModeEnabled={sharedCanvas?.mode === "view" ? true : undefined}
         onPointerUpdate={collabAPI?.onPointerUpdate}
         UIOptions={{
           canvasActions: {
             toggleTheme: true,
             export: {
-              onExportToBackend,
+              // excalidraw.com's link snapshots; canvases have share links
+              onExportToBackend:
+                isCanvasStoreEnabled() || getSharedLinkToken()
+                  ? undefined
+                  : onExportToBackend,
               renderCustomUI:
                 excalidrawAPI && !isPlusBrandingHidden
                   ? (elements, appState, files) => {
@@ -1188,7 +1298,10 @@ const ExcalidrawWrapper = () => {
             {
               label: t("roomDialog.button_stopSession"),
               category: DEFAULT_CATEGORIES.app,
-              predicate: () => !!collabAPI?.isCollaborating(),
+              // canvas rooms stay open as long as the canvas
+              predicate: () =>
+                !!collabAPI?.isCollaborating() &&
+                !collabAPI.getCanvasRoomRole(),
               keywords: [
                 "stop",
                 "session",

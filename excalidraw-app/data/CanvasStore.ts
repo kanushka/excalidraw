@@ -2,6 +2,10 @@
 // Functions, see /functions/api). Enabled when `VITE_APP_CANVAS_API_URL` is
 // set; otherwise the app keeps excalidraw.com's single local canvas.
 //
+// A share link (`#share=<token>`) opens a single canvas for someone without
+// an Access login. The canvas store is then off: the guest sees only that
+// canvas, live, through its room (see collab/Collab.tsx).
+//
 // localStorage/IndexedDB (LocalData) remain the local cache of the canvas
 // currently open in this tab. The server is the source of truth, except when
 // the local cache holds changes that haven't reached the server yet ("dirty"),
@@ -41,7 +45,21 @@ const API_URL = (import.meta.env.VITE_APP_CANVAS_API_URL || "").replace(
 
 const SERVER_SAVE_TIMEOUT = 1000;
 
-export const isCanvasStoreEnabled = () => !!API_URL;
+const SHARE_LINK_HASH_RE = /^#share=([a-zA-Z0-9_-]+)$/;
+
+/** the share link this tab was opened with, kept if the URL changes later */
+const sharedLinkToken = API_URL
+  ? window.location.hash.match(SHARE_LINK_HASH_RE)?.[1] ?? null
+  : null;
+
+export const getSharedLinkToken = () => sharedLinkToken;
+
+/** this tab manages the owner's canvases (not opened from a share link) */
+export const isCanvasStoreEnabled = () => !!API_URL && !sharedLinkToken;
+
+const FILES_PATH = sharedLinkToken
+  ? `/share/${sharedLinkToken}/files`
+  : "/files";
 
 // -----------------------------------------------------------------------------
 // API client
@@ -138,7 +156,7 @@ const uploadFile = async (file: BinaryFileData) => {
   if (!storedFileVersions.has(file.id) && getFileVersion(file) === 1) {
     // likely uploaded in an earlier session
     try {
-      await request(`/files/${file.id}`, { method: "HEAD" });
+      await request(`${FILES_PATH}/${file.id}`, { method: "HEAD" });
       storedFileVersions.set(file.id, 1);
       return;
     } catch (error: any) {
@@ -147,7 +165,7 @@ const uploadFile = async (file: BinaryFileData) => {
       }
     }
   }
-  await request(`/files/${file.id}`, {
+  await request(`${FILES_PATH}/${file.id}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -169,7 +187,7 @@ export const loadFilesFromCanvasStore = async (fileIds: readonly FileId[]) => {
     [...new Set(fileIds)].map(async (id) => {
       try {
         const data: BinaryFileData = await (
-          await request(`/files/${id}`)
+          await request(`${FILES_PATH}/${id}`)
         ).json();
         loadedFiles.push({ ...data, lastRetrieved: Date.now() });
         storedFileVersions.set(id, getFileVersion(data));
@@ -181,6 +199,28 @@ export const loadFilesFromCanvasStore = async (fileIds: readonly FileId[]) => {
   );
 
   return { loadedFiles, erroredFiles };
+};
+
+/** uploads image files, e.g. ones added during live collaboration */
+export const saveFilesToCanvasStore = async (
+  files: readonly BinaryFileData[],
+) => {
+  const savedFiles: FileId[] = [];
+  const erroredFiles: FileId[] = [];
+  await Promise.all(
+    files.map(async (file) => {
+      try {
+        if (!isFileStored(file)) {
+          await uploadFile(file);
+        }
+        savedFiles.push(file.id);
+      } catch (error: any) {
+        console.error(error);
+        erroredFiles.push(file.id);
+      }
+    }),
+  );
+  return { savedFiles, erroredFiles };
 };
 
 /** loads image files from the local cache, falling back to the server */
@@ -206,6 +246,70 @@ export const getSceneFileIds = (elements: readonly ExcalidrawElement[]) => {
     }
   }
   return [...fileIds];
+};
+
+// -----------------------------------------------------------------------------
+// share links and live rooms
+// -----------------------------------------------------------------------------
+
+export type ShareMode = "view" | "edit";
+
+export type ShareLink = {
+  token: string;
+  mode: ShareMode;
+  createdAt: number;
+  url: string;
+};
+
+export type SharedCanvas = { name: string; mode: ShareMode };
+
+export const listShareLinks = async (canvasId: string): Promise<ShareLink[]> =>
+  (await request(`/canvases/${canvasId}/links`)).json();
+
+export const createShareLink = async (
+  canvasId: string,
+  mode: ShareMode,
+): Promise<ShareLink> =>
+  (
+    await request(`/canvases/${canvasId}/links`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    })
+  ).json();
+
+export const revokeShareLink = async (token: string) => {
+  await request(`/links/${token}`, { method: "DELETE" });
+};
+
+/** the canvas this tab's share link opens; `null` if the link doesn't work */
+export const loadSharedCanvas = async (): Promise<SharedCanvas | null> => {
+  if (!sharedLinkToken) {
+    return null;
+  }
+  try {
+    return await (await request(`/share/${sharedLinkToken}`)).json();
+  } catch (error: any) {
+    if (error instanceof CanvasApiError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+};
+
+/** the WebSocket URL of the live room of the open canvas */
+export const getCanvasRoomUrl = () => {
+  const path = sharedLinkToken
+    ? `/share/${sharedLinkToken}/room`
+    : currentCanvasId
+    ? `/canvases/${currentCanvasId}/room`
+    : null;
+  if (!path) {
+    return null;
+  }
+  const url = new URL(`${API_URL}${path}`, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 };
 
 // -----------------------------------------------------------------------------
@@ -384,6 +488,26 @@ export const scheduleCanvasSave = (
     saveTimer = null;
     startSave().catch(() => {});
   }, SERVER_SAVE_TIMEOUT);
+};
+
+/**
+ * Called once the open canvas's live room has all of its changes: the room
+ * saves the canvas from then on (see collab/Collab.tsx), so any save that
+ * couldn't reach the server is dropped.
+ */
+export const handOverCanvasSaveToRoom = () => {
+  if (saveTimer) {
+    window.clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  pendingSave = null;
+  if (
+    currentCanvasId &&
+    storage.get(STORAGE_KEYS.LOCAL_STORAGE_CANVAS_DIRTY) === currentCanvasId
+  ) {
+    storage.set(STORAGE_KEYS.LOCAL_STORAGE_CANVAS_DIRTY, null);
+  }
+  setSaveStatus("saved");
 };
 
 /** saves pending changes now; rejects if the server can't be reached */

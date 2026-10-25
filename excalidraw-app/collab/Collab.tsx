@@ -43,6 +43,7 @@ import type {
   OrderedExcalidrawElement,
 } from "@excalidraw/element/types";
 import type {
+  AppState,
   BinaryFileData,
   ExcalidrawImperativeAPI,
   SocketId,
@@ -73,6 +74,12 @@ import {
   FileManager,
   updateStaleImageStatuses,
 } from "../data/FileManager";
+import {
+  getCanvasRoomUrl,
+  handOverCanvasSaveToRoom,
+  loadFilesFromCanvasStore,
+  saveFilesToCanvasStore,
+} from "../data/CanvasStore";
 import { FileStatusStore } from "../data/fileStatusStore";
 import { LocalData } from "../data/LocalData";
 import {
@@ -88,6 +95,7 @@ import {
 } from "../data/localStorage";
 import { resetBrowserStateVersions } from "../data/tabSync";
 
+import { CanvasRoomSocket, ROOM_CLOSE_CODES } from "./CanvasRoomSocket";
 import { collabErrorIndicatorAtom } from "./CollabError";
 import Portal from "./Portal";
 
@@ -95,6 +103,7 @@ import type {
   SocketUpdateDataSource,
   SyncableExcalidrawElement,
 } from "../data";
+import type { Socket } from "socket.io-client";
 
 export const collabAPIAtom = atom<CollabAPI | null>(null);
 export const isCollaboratingAtom = atom(false);
@@ -109,6 +118,38 @@ interface CollabState {
 }
 
 export const activeRoomLinkAtom = atom<string | null>(null);
+
+/**
+ * With multiple canvases (data/CanvasStore.ts) every canvas has its own live
+ * room on the canvas API, which replaces excalidraw.com's rooms: the owner's
+ * open canvas is always in its room, and share links join it as editors or
+ * viewers. The room saves the canvas, so it isn't stored in Firebase, and
+ * messages aren't end-to-end encrypted, so the room can enforce read-only
+ * links.
+ */
+export type CanvasRoomRole = "owner" | "edit" | "view";
+
+// stands in for the room id and key of excalidraw.com rooms, which the
+// canvas API derives from the canvas or the share link instead
+const CANVAS_ROOM = "canvas";
+
+/** canvas settings shared in a canvas room (see cloudflare/collab/room.ts) */
+const SHARED_APP_STATE_KEYS = [
+  "viewBackgroundColor",
+  "gridSize",
+  "gridStep",
+  "gridModeEnabled",
+] as const;
+
+const pickSharedAppState = (appState: Partial<AppState>) => {
+  const picked: Partial<AppState> = {};
+  for (const key of SHARED_APP_STATE_KEYS) {
+    if (appState[key] !== undefined) {
+      (picked as any)[key] = appState[key];
+    }
+  }
+  return picked;
+};
 export const userToFollowAtom = atom<UserToFollow | null>(null);
 
 type CollabInstance = InstanceType<typeof Collab>;
@@ -126,6 +167,11 @@ export interface CollabAPI {
   getActiveRoomLink: CollabInstance["getActiveRoomLink"];
   setCollabError: CollabInstance["setErrorDialog"];
   setUserToFollow: CollabInstance["setUserToFollow"];
+  joinCanvasRoom: CollabInstance["joinCanvasRoom"];
+  leaveCanvasRoom: CollabInstance["leaveCanvasRoom"];
+  getCanvasRoomRole: CollabInstance["getCanvasRoomRole"];
+  isCanvasRoomSynced: CollabInstance["isCanvasRoomSynced"];
+  syncCanvasAppState: CollabInstance["syncCanvasAppState"];
 }
 
 interface CollabProps {
@@ -144,6 +190,11 @@ class Collab extends PureComponent<CollabProps, CollabState> {
   private collaborators = new Map<SocketId, Collaborator>();
   /** the socket ids of the users following the current user */
   private followedBy = new Set<SocketId>();
+  /** set while in a canvas room (instead of an excalidraw.com room) */
+  private canvasRoomRole: CanvasRoomRole | null = null;
+  /** the shared canvas settings last sent or received; `null` until the
+   *  room sent them */
+  private lastSyncedAppState: string | null = null;
 
   constructor(props: CollabProps) {
     super(props);
@@ -161,6 +212,9 @@ class Collab extends PureComponent<CollabProps, CollabState> {
         if (!roomId || !roomKey) {
           throw new AbortError();
         }
+        if (this.canvasRoomRole) {
+          return loadFilesFromCanvasStore(fileIds);
+        }
 
         return loadFilesFromFirebase(`files/rooms/${roomId}`, roomKey, fileIds);
       },
@@ -170,14 +224,18 @@ class Collab extends PureComponent<CollabProps, CollabState> {
           throw new AbortError();
         }
 
-        const { savedFiles, erroredFiles } = await saveFilesToFirebase({
-          prefix: `${FIREBASE_STORAGE_PREFIXES.collabFiles}/${roomId}`,
-          files: await encodeFilesForUpload({
-            files: addedFiles,
-            encryptionKey: roomKey,
-            maxBytes: FILE_UPLOAD_MAX_BYTES,
-          }),
-        });
+        const { savedFiles, erroredFiles } = this.canvasRoomRole
+          ? this.canvasRoomRole === "view"
+            ? { savedFiles: [], erroredFiles: [] }
+            : await saveFilesToCanvasStore([...addedFiles.values()])
+          : await saveFilesToFirebase({
+              prefix: `${FIREBASE_STORAGE_PREFIXES.collabFiles}/${roomId}`,
+              files: await encodeFilesForUpload({
+                files: addedFiles,
+                encryptionKey: roomKey,
+                maxBytes: FILE_UPLOAD_MAX_BYTES,
+              }),
+            });
 
         return {
           savedFiles: savedFiles.reduce(
@@ -246,6 +304,11 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       getActiveRoomLink: this.getActiveRoomLink,
       setCollabError: this.setErrorDialog,
       setUserToFollow: this.setUserToFollow,
+      joinCanvasRoom: this.joinCanvasRoom,
+      leaveCanvasRoom: this.leaveCanvasRoom,
+      getCanvasRoomRole: this.getCanvasRoomRole,
+      isCanvasRoomSynced: this.isCanvasRoomSynced,
+      syncCanvasAppState: this.syncCanvasAppState,
     };
 
     appJotaiStore.set(collabAPIAtom, collabAPI);
@@ -304,7 +367,9 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     if (
       this.isCollaborating() &&
       (this.fileManager.shouldPreventUnload(syncableElements) ||
-        !isSavedToFirebase(this.portal, syncableElements))
+        // a canvas room saves the scene itself
+        (!this.canvasRoomRole &&
+          !isSavedToFirebase(this.portal, syncableElements)))
     ) {
       // this won't run in time if user decides to leave the site, but
       //  the purpose is to run in immediately after user decides to stay
@@ -323,6 +388,10 @@ class Collab extends PureComponent<CollabProps, CollabState> {
   saveCollabRoomToFirebase = async (
     syncableElements: readonly SyncableExcalidrawElement[],
   ) => {
+    if (this.canvasRoomRole) {
+      // the canvas room saves the scene
+      return;
+    }
     syncableElements = cloneJSON(syncableElements);
     try {
       const storedElements = await saveToFirebase(
@@ -363,6 +432,10 @@ class Collab extends PureComponent<CollabProps, CollabState> {
   };
 
   stopCollaboration = (keepRemoteState = true) => {
+    if (this.canvasRoomRole) {
+      this.leaveCanvasRoom();
+      return;
+    }
     this.queueBroadcastAllElements.cancel();
     this.queueSaveToFirebase.cancel();
     this.loadImageFiles.cancel();
@@ -497,6 +570,9 @@ class Collab extends PureComponent<CollabProps, CollabState> {
 
     if (existingRoomLinkData) {
       ({ roomId, roomKey } = existingRoomLinkData);
+    } else if (this.canvasRoomRole) {
+      // the owner's canvas room: the canvas URL is the room's link
+      roomId = roomKey = CANVAS_ROOM;
     } else {
       ({ roomId, roomKey } = await generateCollaborationLinkData());
       window.history.pushState(
@@ -513,11 +589,10 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     >();
 
     this.setIsCollaborating(true);
-    LocalData.pauseSave("collaboration");
-
-    const { default: socketIOClient } = await import(
-      /* webpackChunkName: "socketIoClient" */ "socket.io-client"
-    );
+    if (this.canvasRoomRole !== "owner") {
+      // the owner's room holds the canvas the local cache holds
+      LocalData.pauseSave("collaboration");
+    }
 
     const fallbackInitializationHandler = () => {
       this.initializeRoom({
@@ -530,13 +605,23 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     this.fallbackInitializationHandler = fallbackInitializationHandler;
 
     try {
-      this.portal.socket = this.portal.open(
-        socketIOClient(import.meta.env.VITE_APP_WS_SERVER_URL, {
+      let socket: Socket;
+      if (this.canvasRoomRole) {
+        const url = getCanvasRoomUrl();
+        if (!url) {
+          throw new Error("No canvas is open");
+        }
+        socket = new CanvasRoomSocket(url) as unknown as Socket;
+        this.listenToCanvasRoom(socket);
+      } else {
+        const { default: socketIOClient } = await import(
+          /* webpackChunkName: "socketIoClient" */ "socket.io-client"
+        );
+        socket = socketIOClient(import.meta.env.VITE_APP_WS_SERVER_URL, {
           transports: ["websocket", "polling"],
-        }),
-        roomId,
-        roomKey,
-      );
+        });
+      }
+      this.portal.socket = this.portal.open(socket, roomId, roomKey);
 
       this.portal.socket.once("connect_error", fallbackInitializationHandler);
     } catch (error: any) {
@@ -548,7 +633,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     if (existingRoomLinkData) {
       // when joining existing room, don't merge it with current scene data
       this.excalidrawAPI.resetScene();
-    } else {
+    } else if (!this.canvasRoomRole) {
       const elements = this.excalidrawAPI.getSceneElements().map((element) => {
         if (isImageElement(element) && element.status === "saved") {
           return newElementWith(element, { status: "pending" });
@@ -582,11 +667,9 @@ class Collab extends PureComponent<CollabProps, CollabState> {
           return;
         }
 
-        const decryptedData = await this.decryptPayload(
-          iv,
-          encryptedData,
-          this.portal.roomKey,
-        );
+        const decryptedData = this.canvasRoomRole
+          ? (encryptedData as unknown as ValueOf<SocketUpdateDataSource>)
+          : await this.decryptPayload(iv, encryptedData, this.portal.roomKey);
 
         switch (decryptedData.type) {
           case WS_SUBTYPES.INVALID_RESPONSE:
@@ -605,6 +688,18 @@ class Collab extends PureComponent<CollabProps, CollabState> {
                 elements: reconciledElements,
                 scrollToContent: true,
               });
+              this.syncFullSceneToCanvasRoom();
+            } else if (this.canvasRoomRole) {
+              // a canvas room sends the scene on every (re)connect: catch up
+              // with what changed while disconnected, then send our changes
+              this.handleRemoteSceneUpdate(
+                this._reconcileElements(
+                  toBrandedType<readonly RemoteExcalidrawElement[]>(
+                    decryptedData.payload.elements,
+                  ),
+                ),
+              );
+              this.syncFullSceneToCanvasRoom();
             }
             break;
           }
@@ -727,7 +822,13 @@ class Collab extends PureComponent<CollabProps, CollabState> {
         this.fallbackInitializationHandler,
       );
     }
-    if (fetchScene && roomLinkData && this.portal.socket) {
+    if (
+      fetchScene &&
+      roomLinkData &&
+      this.portal.socket &&
+      // canvas rooms send the scene once connected
+      !this.canvasRoomRole
+    ) {
       this.excalidrawAPI.resetScene();
 
       try {
@@ -1000,6 +1101,119 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     SYNC_FULL_SCENE_INTERVAL_MS,
     { leading: false },
   );
+
+  // ---------------------------------------------------------------------------
+  // canvas rooms
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Joins the live room of the open canvas (`owner`, merging it with the
+   * scene on screen) or of this tab's share link (`edit` / `view`, replacing
+   * the scene). Resolves like `startCollaboration`.
+   */
+  joinCanvasRoom = (role: CanvasRoomRole) => {
+    this.leaveCanvasRoom();
+    this.canvasRoomRole = role;
+    this.lastSyncedAppState = null;
+    return this.startCollaboration(
+      role === "owner" ? null : { roomId: CANVAS_ROOM, roomKey: CANVAS_ROOM },
+    );
+  };
+
+  /** leaves the canvas room, keeping the scene on screen */
+  leaveCanvasRoom = () => {
+    if (!this.canvasRoomRole) {
+      return;
+    }
+    window.clearTimeout(this.socketInitializationTimer);
+    this.queueBroadcastAllElements.cancel();
+    this.queueSaveToFirebase.cancel();
+    this.loadImageFiles.cancel();
+    this.resetErrorIndicator(true);
+    this.destroySocketClient();
+    this.canvasRoomRole = null;
+    this.lastSyncedAppState = null;
+  };
+
+  getCanvasRoomRole = () => this.canvasRoomRole;
+
+  /** whether changes reach the canvas room (which then saves them) */
+  isCanvasRoomSynced = () =>
+    !!this.canvasRoomRole &&
+    this.portal.isOpen() &&
+    !!this.portal.socket?.connected;
+
+  /** whether anyone else is in the room to see cursors etc. */
+  hasOtherCollaborators = () =>
+    [...this.collaborators.values()].some(
+      (collaborator) => !collaborator.isCurrentUser,
+    );
+
+  /** sends changed canvas settings (background, grid) to the canvas room */
+  syncCanvasAppState = (appState: AppState) => {
+    if (
+      !this.canvasRoomRole ||
+      this.canvasRoomRole === "view" ||
+      this.lastSyncedAppState === null ||
+      !this.isCanvasRoomSynced()
+    ) {
+      return;
+    }
+    const shared = pickSharedAppState(appState);
+    const serialized = JSON.stringify(shared);
+    if (serialized !== this.lastSyncedAppState) {
+      this.lastSyncedAppState = serialized;
+      this.portal.socket?.emit("canvas-app-state", shared);
+    }
+  };
+
+  /** sends the whole scene, e.g. changes made before joining */
+  private syncFullSceneToCanvasRoom = () => {
+    if (this.canvasRoomRole && this.canvasRoomRole !== "view") {
+      this.portal.broadcastScene(
+        WS_SUBTYPES.UPDATE,
+        this.getSceneElementsIncludingDeleted(),
+        true,
+      );
+    }
+    if (this.canvasRoomRole === "owner") {
+      handOverCanvasSaveToRoom();
+    }
+  };
+
+  private listenToCanvasRoom = (socket: Socket) => {
+    socket.on("connect", () => {
+      // the room sends its canvas settings after the scene
+      this.lastSyncedAppState = null;
+      this.resetErrorIndicator();
+    });
+    socket.on("disconnect", () => {
+      this.setErrorIndicator(
+        "Lost the connection to the live canvas, reconnecting…",
+      );
+    });
+    socket.on("canvas-app-state", (appState: Partial<AppState>) => {
+      const shared = pickSharedAppState(appState);
+      this.lastSyncedAppState = JSON.stringify(
+        pickSharedAppState({ ...this.excalidrawAPI.getAppState(), ...shared }),
+      );
+      this.excalidrawAPI.updateScene({
+        appState: shared as AppState,
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+    });
+    socket.on("room-closed", (code: number) => {
+      const isGuest = this.canvasRoomRole !== "owner";
+      this.leaveCanvasRoom();
+      if (isGuest) {
+        this.setErrorDialog(
+          code === ROOM_CLOSE_CODES.LINK_REVOKED
+            ? "This share link was turned off by its owner. Changes you make now aren't saved."
+            : "This canvas was deleted. Changes you make now aren't saved.",
+        );
+      }
+    });
+  };
 
   setUserToFollow = (userToFollow: UserToFollow | null) => {
     const prev = appJotaiStore.get(userToFollowAtom) ?? null;
